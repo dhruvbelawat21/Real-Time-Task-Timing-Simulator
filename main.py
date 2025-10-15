@@ -208,47 +208,67 @@ class RR(SchedulerBase):
 # ------------------------------
 
 class Simulator:
-    def __init__(self, task_specs: List[TaskSpec], scheduler: SchedulerBase, sim_time: int = 200, time_unit:int = 1):
+    def __init__(
+        self,
+        task_specs: List[TaskSpec],
+        scheduler: SchedulerBase,
+        sim_time: int = 200,
+        time_unit: int = 1,
+        preemptive: bool = True,
+        cores: int = 1
+    ):
         self.specs = task_specs
         self.scheduler = scheduler
         self.sim_time = sim_time
         self.time_unit = time_unit
-        self.jobs: List[Job] = []       # all job instances (finished or not)
+        self.preemptive = preemptive
+        self.cores = cores
+
+        # State variables
+        self.jobs: List[Job] = []
         self.ready: List[Job] = []
-        self.running: Optional[Job] = None
-        self.timeline: List[Optional[int]] = [None] * sim_time  # uid of job running at each tick or None
-        self.gantt_segments: Dict[str, List[Tuple[int,int]]] = {}  # task_id -> list of (start, end)
+        self.running: List[Optional[Job]] = [None] * cores  # track job per core
+        self.timeline: List[List[Optional[int]]] = [
+            [None] * cores for _ in range(sim_time)
+        ]  # uid per core per tick
+
+        self.gantt_segments: Dict[str, List[Tuple[int, int, int]]] = {}  # task_id -> list of (core, start, end)
         self.job_records: Dict[int, Job] = {}
         self.uid_counter = 1
 
     def instantiate_job(self, spec: TaskSpec, release_time: int, instance_no: int) -> Job:
         rel = release_time
-        # jitter
         if spec.jitter:
             rel += random.randint(-spec.jitter, spec.jitter)
-            if rel < 0:
-                rel = 0
+            rel = max(rel, 0)
         rel = int(rel)
+
         if spec.deadline is not None:
             abs_deadline = rel + spec.deadline
         elif spec.period is not None:
             abs_deadline = rel + spec.period
         else:
-            # default: soft deadline = rel + wcet * 10 (arbitrary)
-            abs_deadline = rel + spec.wcet * 10
-        job = Job(uid=self.uid_counter, task_id=spec.id, release_time=rel, absolute_deadline=abs_deadline,
-                  exec_time=spec.wcet, remaining=spec.wcet, spec=spec, instance_no=instance_no)
+            abs_deadline = rel + spec.wcet * 10  # default soft deadline
+
+        job = Job(
+            uid=self.uid_counter,
+            task_id=spec.id,
+            release_time=rel,
+            absolute_deadline=abs_deadline,
+            exec_time=spec.wcet,
+            remaining=spec.wcet,
+            spec=spec,
+            instance_no=instance_no,
+        )
         self.uid_counter += 1
         self.jobs.append(job)
         self.job_records[job.uid] = job
         return job
 
     def prepare_job_releases(self):
-        """Generate job release times for periodic tasks up to sim_time."""
         releases = []
         for spec in self.specs:
             if spec.type == "periodic" and spec.period is not None:
-                # schedule periodic instances
                 instances = spec.instances if spec.instances is not None else math.inf
                 t = spec.release
                 i = 1
@@ -256,152 +276,131 @@ class Simulator:
                     releases.append((t, spec, i))
                     t += spec.period
                     i += 1
-            else:
-                # aperiodic/one-shot
-                if spec.type in ("aperiodic", "interrupt"):
-                    releases.append((spec.release, spec, 1))
-        # also include any random arrivals or other dynamic arrivals (not implemented here, but structure allows adding)
+            elif spec.type in ("aperiodic", "interrupt"):
+                releases.append((spec.release, spec, 1))
         releases.sort(key=lambda x: x[0])
         return releases
 
-    def run(self, realtime_visualize: bool=False, verbose: bool = False):
-        # instantiate initial releases structure
+    def run(self, realtime_visualize: bool = False, verbose: bool = False):
         releases = self.prepare_job_releases()
         release_idx = 0
-        # For aperiodic tasks whose release >0, they'll be included in releases above
 
-        # main discrete-time simulation
         for t in range(self.sim_time):
-            # release new jobs with release_time == t
+            # Release new jobs
             while release_idx < len(releases) and releases[release_idx][0] <= t:
                 rel_time, spec, inst_no = releases[release_idx]
                 job = self.instantiate_job(spec, rel_time, inst_no)
-                # if job released later than or equal to current tick, we add to ready at current tick
                 if job.release_time <= t:
                     self.ready.append(job)
-                else:
-                    # schedule for future ticks by reinserting to releases - but our prepare_job_releases ensures release_time set correctly
-                    pass
                 release_idx += 1
 
-            # select next job
-            prev_running = self.running
-            candidate = self.scheduler.get_next_job(self.ready, t, self.running)
+            # Assign jobs to cores
+            for core_id in range(self.cores):
+                current = self.running[core_id]
+                candidate = self.scheduler.get_next_job(self.ready, t, current)
 
-            # If scheduler returns a job not in ready, ensure it's ready
-            if candidate and candidate not in self.ready:
-                self.ready.append(candidate)
+                # Preemption logic
+                if candidate is None:
+                    self.running[core_id] = None
+                    self.timeline[t][core_id] = None
+                    continue
 
-            # Preemption & switching logic:
-            if candidate is None:
-                # CPU idle
-                self.running = None
-                self.timeline[t] = None
-            else:
-                # if candidate != running -> switch (preemption)
-                if self.running is None:
-                    # start candidate
-                    self.running = candidate
-                    if self.running.start_time is None:
-                        self.running.start_time = t
-                else:
-                    if candidate.uid != self.running.uid:
-                        # preempt current job only if scheduler is preemptive
-                        if self.scheduler.preemptive:
-                            # save current
-                            # update start/segments
-                            self.running = candidate
-                            if self.running.start_time is None:
-                                self.running.start_time = t
-                        else:
-                            # scheduler non-preemptive: continue current
-                            candidate = self.running
+                if current is None:
+                    self.running[core_id] = candidate
+                    if candidate.start_time is None:
+                        candidate.start_time = t
+                elif candidate.uid != current.uid:
+                    if self.preemptive and self.scheduler.preemptive:
+                        self.running[core_id] = candidate
+                        if candidate.start_time is None:
+                            candidate.start_time = t
+                    else:
+                        candidate = current
 
-                # execute for 1 time unit
-                self.running.remaining -= 1
-                self.timeline[t] = self.running.uid
+                # Execute 1 tick
+                self.running[core_id].remaining -= 1
+                self.timeline[t][core_id] = self.running[core_id].uid
 
-                # RR special: decrement quantum
+                # Round Robin: quantum control
                 if isinstance(self.scheduler, RR):
                     self.scheduler.consume_quantum(1)
 
-                # if job finished
-                if self.running.remaining <= 0:
-                    self.running.finish_time = t + 1
-                    self.running.response_time = (self.running.finish_time - self.running.release_time)
-                    # record gantt segment end handled below
-                    # remove from ready
-                    try:
-                        self.ready.remove(self.running)
-                    except ValueError:
-                        pass
-                    self.running = None
+                # If job finishes
+                if self.running[core_id].remaining <= 0:
+                    j = self.running[core_id]
+                    j.finish_time = t + 1
+                    j.response_time = j.finish_time - j.release_time
+                    if j in self.ready:
+                        self.ready.remove(j)
+                    self.running[core_id] = None
 
-            # update ready list: remove jobs whose remaining <=0 (cleanup)
+            # Cleanup finished
             self.ready = [j for j in self.ready if j.remaining > 0]
 
-        # after simulation, compute gantt segments from timeline
-        uid_to_task = {}
+        # Build Gantt segments
+        uid_to_task = {j.uid: j.task_id for j in self.jobs}
         for job in self.jobs:
-            uid_to_task[job.uid] = job.task_id
             if job.task_id not in self.gantt_segments:
                 self.gantt_segments[job.task_id] = []
 
-        # collapse timeline into segments per task
-        current_uid = None
-        seg_start = None
-        for t, uid in enumerate(self.timeline):
-            if uid != current_uid:
-                # close previous
-                if current_uid is not None:
-                    taskid = uid_to_task.get(current_uid, "IDLE")
-                    self.gantt_segments.setdefault(taskid, []).append((seg_start, t))
-                # start new
-                current_uid = uid
-                seg_start = t if uid is not None else t
-            # continue
-        # close final
-        if current_uid is not None:
-            taskid = uid_to_task.get(current_uid, "IDLE")
-            self.gantt_segments.setdefault(taskid, []).append((seg_start, self.sim_time))
+        for core_id in range(self.cores):
+            current_uid = None
+            seg_start = 0
+            for t in range(self.sim_time):
+                uid = self.timeline[t][core_id]
+                if uid != current_uid:
+                    if current_uid is not None:
+                        task_id = uid_to_task.get(current_uid, "IDLE")
+                        self.gantt_segments.setdefault(task_id, []).append(
+                            (core_id, seg_start, t)
+                        )
+                    current_uid = uid
+                    seg_start = t
+            if current_uid is not None:
+                task_id = uid_to_task.get(current_uid, "IDLE")
+                self.gantt_segments.setdefault(task_id, []).append(
+                    (core_id, seg_start, self.sim_time)
+                )
 
         return self._compute_metrics()
 
     def _compute_metrics(self):
-        # CPU utilization = time busy / sim_time
-        busy = sum(1 for x in self.timeline if x is not None)
-        cpu_util = busy / self.sim_time if self.sim_time > 0 else 0.0
-        # response times among finished jobs
+        busy = sum(
+            1
+            for t in range(self.sim_time)
+            for c in range(self.cores)
+            if self.timeline[t][c] is not None
+        )
+        cpu_util = busy / (self.sim_time * self.cores)
         finished = [j for j in self.jobs if j.finish_time is not None]
-        response_times = [j.response_time for j in finished if j.response_time is not None]
+        response_times = [j.response_time for j in finished if j.response_time]
         avg_response = statistics.mean(response_times) if response_times else None
-        # missed deadlines: a finished job misses if finish_time > absolute_deadline; an unfinished job that is past its deadline also counts
-        missed = 0
-        for j in self.jobs:
-            if j.finish_time is not None:
-                if j.finish_time > j.absolute_deadline:
-                    missed += 1
-            else:
-                # unfinished and deadline already passed during sim
-                if j.absolute_deadline < self.sim_time:
-                    missed += 1
+
+        missed = sum(
+            1
+            for j in self.jobs
+            if (j.finish_time and j.finish_time > j.absolute_deadline)
+            or (j.finish_time is None and j.absolute_deadline < self.sim_time)
+        )
+
         return {
             "cpu_utilization": cpu_util,
             "avg_response_time": avg_response,
             "missed_deadlines": missed,
             "total_jobs": len(self.jobs),
             "finished_jobs": len(finished),
-            "busy_time": busy
+            "busy_time": busy,
         }
 
     def export_csv(self, filename="simulation_results.csv"):
-        # export job records + metrics
         metrics = self._compute_metrics()
         now = datetime.datetime.now().isoformat()
-        with open(filename, "w", newline='') as f:
+        with open(filename, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["sim_time", self.sim_time])
             writer.writerow(["scheduler", self.scheduler.name])
+            writer.writerow(["cores", self.cores])
+            writer.writerow(["preemptive", self.preemptive])
             writer.writerow(["generated_on", now])
             writer.writerow([])
             writer.writerow(["metrics"])
@@ -409,10 +408,39 @@ class Simulator:
                 writer.writerow([k, v])
             writer.writerow([])
             writer.writerow(["jobs"])
-            writer.writerow(["uid", "task_id", "instance_no", "release", "deadline", "wcet", "start", "finish", "response_time", "missed"])
+            writer.writerow(
+                [
+                    "uid",
+                    "task_id",
+                    "instance_no",
+                    "release",
+                    "deadline",
+                    "wcet",
+                    "start",
+                    "finish",
+                    "response_time",
+                    "missed",
+                ]
+            )
             for j in sorted(self.jobs, key=lambda x: x.uid):
-                missed = 1 if (j.finish_time is None or j.finish_time > j.absolute_deadline) and j.absolute_deadline < self.sim_time else 0
-                writer.writerow([j.uid, j.task_id, j.instance_no, j.release_time, j.absolute_deadline, j.exec_time, j.start_time, j.finish_time, j.response_time, missed])
+                missed = int(
+                    (j.finish_time and j.finish_time > j.absolute_deadline)
+                    or (j.finish_time is None and j.absolute_deadline < self.sim_time)
+                )
+                writer.writerow(
+                    [
+                        j.uid,
+                        j.task_id,
+                        j.instance_no,
+                        j.release_time,
+                        j.absolute_deadline,
+                        j.exec_time,
+                        j.start_time,
+                        j.finish_time,
+                        j.response_time,
+                        missed,
+                    ]
+                )
         return filename
 
 # ------------------------------
@@ -453,7 +481,7 @@ def plot_gantt_and_animate(sim: Simulator, title: str = "RT Scheduling Gantt", p
         row = task_indices.get(tid, None)
         if row is None:
             continue
-        for (s, e) in segs:
+        for s, e, *_ in segs:
             rect = ax.barh(row + 0.1, e - s, left=s, height=0.8, align='center', color=color_map.get(tid, 'grey'), edgecolor='black')
             bars.append(rect)
 
@@ -586,26 +614,116 @@ def get_scheduler_by_name(name: str, quantum: int = 2):
         return RR(quantum=quantum)
     raise ValueError("Unknown scheduler")
 
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import sys
+
+# === Your existing imports ===
+# from scheduler import get_scheduler_by_name
+# from simulator import Simulator
+# from visualization import plot_gantt_and_animate
+# from data_loader import load_tasks_from_json, load_tasks_from_csv, SAMPLE_TASKS
+# (Make sure those imports exist)
+
+def gui_config_menu():
+    root = tk.Tk()
+    root.title("Scheduler Configuration")
+    root.geometry("420x400")
+
+    # Variables
+    scheduler_var = tk.StringVar(value="EDF")
+    preemption_var = tk.BooleanVar(value=True)
+    cores_var = tk.IntVar(value=1)
+    sim_time_var = tk.IntVar(value=50)
+    quantum_var = tk.IntVar(value=2)
+    file_path_var = tk.StringVar(value="")
+    file_type_var = tk.StringVar(value="None")
+
+    # === Labels & Inputs ===
+    ttk.Label(root, text="Scheduler Type:", font=("Arial", 11)).pack(pady=5)
+    sched_combo = ttk.Combobox(root, textvariable=scheduler_var, values=["EDF", "RM", "DM", "LLF"], state="readonly")
+    sched_combo.pack()
+
+    ttk.Label(root, text="Preemption:", font=("Arial", 11)).pack(pady=5)
+    ttk.Checkbutton(root, text="Enable Preemption", variable=preemption_var).pack()
+
+    ttk.Label(root, text="Number of Cores:", font=("Arial", 11)).pack(pady=5)
+    ttk.Spinbox(root, from_=1, to=8, textvariable=cores_var, width=5).pack()
+
+    ttk.Label(root, text="Simulation Time (ticks):", font=("Arial", 11)).pack(pady=5)
+    ttk.Entry(root, textvariable=sim_time_var, width=10).pack()
+
+    ttk.Label(root, text="Quantum (for RR or hybrid):", font=("Arial", 11)).pack(pady=5)
+    ttk.Entry(root, textvariable=quantum_var, width=10).pack()
+
+    ttk.Label(root, text="Load Task File:", font=("Arial", 11)).pack(pady=5)
+    file_frame = ttk.Frame(root)
+    file_frame.pack()
+
+    def browse_file():
+        filepath = filedialog.askopenfilename(filetypes=[("JSON files", "*.json"), ("CSV files", "*.csv")])
+        if filepath:
+            file_path_var.set(filepath)
+            if filepath.endswith(".json"):
+                file_type_var.set("json")
+            elif filepath.endswith(".csv"):
+                file_type_var.set("csv")
+
+    ttk.Button(file_frame, text="Browse...", command=browse_file).pack(side=tk.LEFT, padx=5)
+    ttk.Label(file_frame, textvariable=file_path_var, wraplength=300).pack(side=tk.LEFT)
+
+    def submit():
+        if sim_time_var.get() <= 0:
+            messagebox.showerror("Error", "Simulation time must be positive")
+            return
+        root.destroy()
+
+    ttk.Button(root, text="Run Simulation", command=submit).pack(pady=20)
+
+    root.mainloop()
+
+    return {
+        "scheduler": scheduler_var.get(),
+        "preemption": preemption_var.get(),
+        "cores": cores_var.get(),
+        "sim_time": sim_time_var.get(),
+        "quantum": quantum_var.get(),
+        "file_path": file_path_var.get(),
+        "file_type": file_type_var.get(),
+    }
+
+
 def main():
-    args = parse_args()
-    if args.load_json:
-        specs = load_tasks_from_json(args.load_json)
-    elif args.load_csv:
-        specs = load_tasks_from_csv(args.load_csv)
+    # === Get config from GUI ===
+    config = gui_config_menu()
+
+    # === Load tasks ===
+    if config["file_type"] == "json":
+        specs = load_tasks_from_json(config["file_path"])
+    elif config["file_type"] == "csv":
+        specs = load_tasks_from_csv(config["file_path"])
     else:
         specs = SAMPLE_TASKS
 
-    scheduler = get_scheduler_by_name(args.scheduler, quantum=args.quantum)
-    sim = Simulator(task_specs=specs, scheduler=scheduler, sim_time=args.sim_time)
-    print(f"Running simulation for {args.sim_time} ticks with scheduler {scheduler.name} ...")
+    scheduler = get_scheduler_by_name(config["scheduler"], quantum=config["quantum"])
+    sim = Simulator(
+        task_specs=specs,
+        scheduler=scheduler,
+        sim_time=config["sim_time"],
+        preemptive=config["preemption"],
+        cores=config["cores"]
+    )
+
+    print(f"Running simulation for {config['sim_time']} ticks with scheduler {scheduler.name} ...")
     metrics = sim.run()
     print("Simulation complete. Metrics:")
     for k, v in metrics.items():
         print(f"  {k}: {v}")
-    fname = sim.export_csv(args.export)
+
+    fname = sim.export_csv("simulation_output.csv")
     print(f"Results exported to {fname}")
 
-    plot_gantt_and_animate(sim, title="Real-Time Task Timing Visualizer", playback_speed=args.playback_speed)
+    plot_gantt_and_animate(sim, title=f"{scheduler.name} Visualization", playback_speed=1.0)
 
 
 if __name__ == "__main__":
