@@ -9,222 +9,199 @@ with the OS background processes selected in the GUI.
 def get_user_application_tasks():
     """
     Returns a list of dictionaries defining the User's Application Tasks.
-    
-    Fields:
-    - id: Name of the task
-    - wcet: Worst Case Execution Time
-    - period: (Optional) Period for periodic tasks
-    - deadline: (Optional) Relative deadline
-    - release: Arrival time
-    - type: "periodic", "aperiodic", or "interrupt"
-    - dependencies: List of task IDs that must finish before this one starts
     """
-    
-    tasks = [
-        # --- Example: A Video Streaming App ---
-        
-        # 1. Network Data Fetcher (Periodic, High Priority typically)
+
+    # ==========================================
+    # SCENARIO 1: Automotive Engine Control Unit (ECU)
+    # Characteristics: High frequency, Hard Real-Time, Interrupt driven
+    # ==========================================
+    tasks_automotive = [
+        # 1. Crankshaft Position Sensor (High Frequency)
+        # Determines exactly where the pistons are.
         {
-            "id": "App_NetFetch",
-            "wcet": 2,
-            "period": 10,
+            "id": "ECU_Crank_Read",
+            "wcet": 1,
+            "period": 5,        # Very fast (simulates high RPM)
             "release": 0,
             "type": "periodic",
             "color": "blue"
         },
-        
-        # 2. Video Decoder (Depends on Fetch, Periodic)
+
+        # 2. Fuel Injection Calculation
+        # Must happen immediately after reading position.
         {
-            "id": "App_Decoder",
-            "wcet": 3,
-            "period": 10,
+            "id": "ECU_Fuel_Calc",
+            "wcet": 2,
+            "period": 5,
             "release": 0,
             "type": "periodic",
-            "dependencies": ["App_NetFetch"], # Decoder waits for Fetch
-            "color": "orange"
-        },
-        
-        # 3. Audio Processing (Periodic, needs to be fast)
-        {
-            "id": "App_AudioProc",
-            "wcet": 1,
-            "period": 5, 
-            "release": 0,
-            "type": "periodic",
+            "dependencies": ["ECU_Crank_Read"], 
+            "deadline": 5,      # Hard Deadline: Miss this = Engine Misfire
             "color": "green"
         },
-        
-        # 4. UI Update / Render (Main Thread)
+
+        # 3. Oxygen Sensor (Emissions Control)
+        # Slower loop to adjust air/fuel mixture ratio.
         {
-            "id": "App_UI_Render",
-            "wcet": 2,
-            "period": 15,
+            "id": "ECU_O2_Adjust",
+            "wcet": 3,
+            "period": 20,       # Runs less often
             "release": 2,
             "type": "periodic",
             "color": "purple"
         },
-        
-        # 5. User Interaction (Aperiodic - e.g., Pause button pressed)
+
+        # 4. Dashboard CAN Bus Message
+        # Sends RPM/Speed data to the dashboard. Low priority.
         {
-            "id": "App_Input_Event",
-            "wcet": 1,
-            "release": 25,
-            "deadline": 5, # Needs quick response
-            "type": "interrupt",
-            "color": "red"
-        }
-    ]
-
-    tasks2 = [
-        # --- The Core Game Loop (Sequential Dependencies) ---
-
-        # 1. Input Manager (Must read keyboard/mouse first)
-        {
-            "id": "Game_Input",
-            "wcet": 1,          # Very fast check
-            "period": 16,       # Target: ~60 FPS (16ms)
-            "release": 0,
-            "type": "periodic",
-            "color": "blue"
-        },
-
-        # 2. Physics Engine (Collision & Movement)
-        # MUST happen after Input, so the player moves where they aimed.
-        {
-            "id": "Game_Physics",
-            "wcet": 3,          # Heavy math calculations
-            "period": 16,
-            "release": 0,
-            "type": "periodic",
-            "dependencies": ["Game_Input"],
-            "color": "green"
-        },
-
-        # 3. Renderer (Draw the frame)
-        # Cannot draw until Physics is done calculating positions.
-        {
-            "id": "Game_Render",
-            "wcet": 4,          # Heavy GPU/CPU overhead
-            "period": 16,
-            "release": 0,
-            "type": "periodic",
-            "dependencies": ["Game_Physics"], 
-            "deadline": 16,     # Soft Deadline: miss this = lag spike/frame drop
-            "color": "purple"
-        },
-
-        # --- Independent / Background Systems ---
-
-        # 4. Enemy AI Logic (Pathfinding)
-        # Runs slower than the graphics (e.g., 10 times a second) to save CPU.
-        {
-            "id": "Game_Enemy_AI",
-            "wcet": 5,          # Complex A* pathfinding algorithms
-            "period": 40,       # Slower tick rate
+            "id": "ECU_Dash_Update",
+            "wcet": 2,
+            "period": 40,
             "release": 5,
-            "type": "periodic",
-            "color": "red"
-        },
-
-        # 5. Network Sync (Multiplayer)
-        # Sends player coordinates to the server.
-        {
-            "id": "Game_Net_Sync",
-            "wcet": 2,
-            "period": 30,
-            "release": 10,
-            "type": "periodic",
-            "color": "cyan"
-        },
-
-        # 6. Explosion Event (Aperiodic)
-        # A grenade went off! Needs immediate processing for particle effects.
-        {
-            "id": "Game_Explosion",
-            "wcet": 2,
-            "release": 45,      # Occurs later in the simulation
-            "deadline": 5,      # Visuals must appear instantly
-            "type": "interrupt",
-            "color": "orange"
-        }
-    ]  
-    tasks3 = [
-        # --- Multimedia (Soft Real-Time) ---
-        # These apps need consistent CPU time to avoid audio stuttering.
-
-        # 1. Spotify/Music Stream (Audio Buffer Fill)
-        # Requires frequent, short bursts of CPU to fill the audio buffer.
-        {
-            "id": "Laptop_Music_Stream",
-            "wcet": 1,          # Very quick
-            "period": 5,        # Runs very often (high frequency)
-            "release": 0,
-            "type": "periodic",
-            "color": "green"
-        },
-
-        # 2. Zoom/Teams Meeting (Video Encoding)
-        # Needs a good chunk of CPU regularly to process video frames.
-        {
-            "id": "Laptop_Zoom_Call",
-            "wcet": 3,
-            "period": 10,       # 10 ticks ~ 1 video frame interval
-            "release": 0,
-            "type": "periodic",
-            "deadline": 10,     # If this is missed, video freezes/lags
-            "color": "blue"
-        },
-
-        # --- The Work Workflow (Dependent Tasks) ---
-        
-        # 3. IDE Auto-Save (Text Editor)
-        # Saves the file before the compiler can run.
-        {
-            "id": "Laptop_IDE_Save",
-            "wcet": 1,
-            "period": 40,       # Autosave every 40 ticks
-            "release": 2,
             "type": "periodic",
             "color": "gray"
         },
 
-        # 4. Code Compilation (gcc/make)
-        # Heavy CPU usage. Cannot start until the file is saved.
+        # 5. Knock Sensor Interrupt (Pre-detonation)
+        # Engine is "knocking" - must retard timing INSTANTLY to prevent damage.
         {
-            "id": "Laptop_Compiler",
-            "wcet": 8,          # Compiling takes a long time!
-            "period": 40,
-            "release": 2,
+            "id": "ECU_Knock_Event",
+            "wcet": 1,
+            "release": 18,      # Random occurrence
+            "deadline": 2,      # Ultra-critical response time
+            "type": "interrupt",
+            "color": "red"
+        }
+    ]
+
+    # ==========================================
+    # SCENARIO 2: Medical Infusion Pump
+    # Characteristics: Safety Critical, Strict Dependencies, Reliability
+    # ==========================================
+    tasks_medical = [
+        # 1. Flow Sensor Read
+        # Measure how much fluid is actually moving.
+        {
+            "id": "Med_Flow_Sense",
+            "wcet": 2,
+            "period": 10,
+            "release": 0,
             "type": "periodic",
-            "dependencies": ["Laptop_IDE_Save"], # Waits for save
+            "color": "blue"
+        },
+
+        # 2. Dosage Calculation Algorithm
+        # Compares flow against the prescribed rate.
+        {
+            "id": "Med_Dose_Calc",
+            "wcet": 3,
+            "period": 10,
+            "release": 0,
+            "type": "periodic",
+            "dependencies": ["Med_Flow_Sense"], # Must wait for sensor
+            "color": "green"
+        },
+
+        # 3. Motor Stepper Control
+        # Physically moves the plunger based on calculation.
+        {
+            "id": "Med_Motor_Step",
+            "wcet": 2,
+            "period": 10,
+            "release": 0,
+            "type": "periodic",
+            "dependencies": ["Med_Dose_Calc"], # Must wait for calc
+            "deadline": 10,     # Must finish before next cycle
             "color": "orange"
         },
 
-        # --- Interruptions ---
-
-        # 5. Slack/Discord Notification
-        # A message arrives and demands immediate UI focus (pop-up).
+        # 4. System Integrity Check (Watchdog)
+        # Ensures RAM/ROM is not corrupted.
         {
-            "id": "Laptop_Slack_Ping",
-            "wcet": 1,
-            "release": 23,      # Random time during the work
-            "deadline": 3,      # Needs to show up immediately
-            "type": "interrupt",
-            "color": "red"
-        },
-        
-        # 6. Windows Update / Virus Scan (Background)
-        # Low priority annoyance that runs in the background.
-        {
-            "id": "Laptop_Sys_Update",
-            "wcet": 5,
-            "period": 60,       # Runs rarely
+            "id": "Med_Integrity",
+            "wcet": 4,
+            "period": 50,       # Runs in background
             "release": 15,
             "type": "periodic",
-            "color": "purple"
+            "color": "gray"
+        },
+
+        # 5. Air Bubble Detected! (Alarm)
+        # Optical sensor sees air in the line. STOP PUMPING.
+        {
+            "id": "Med_Air_Alarm",
+            "wcet": 1,
+            "release": 35,
+            "deadline": 3,      # Critical safety stop
+            "type": "interrupt",
+            "color": "red"
         }
     ]
-    
-    
-    
-    return tasks
+
+    # ==========================================
+    # SCENARIO 3: Mars Rover / Space Probe
+    # Characteristics: Power/Thermal Management, Bursty Science Data
+    # ==========================================
+    tasks_space = [
+        # 1. Thermal Management (Heaters)
+        # Electronics will die if they get too cold. Highest Priority Periodic.
+        {
+            "id": "Rover_Thermal",
+            "wcet": 2,
+            "period": 15,
+            "release": 0,
+            "type": "periodic",
+            "color": "red"
+        },
+
+        # 2. Navigation Camera (Hazard Avoidance)
+        # Takes a picture to see rocks. Heavy processing.
+        {
+            "id": "Rover_Nav_Cam",
+            "wcet": 6,          # Takes a long time to process image
+            "period": 30,
+            "release": 0,
+            "type": "periodic",
+            "dependencies": ["Rover_Thermal"], # Thermal runs first
+            "color": "blue"
+        },
+
+        # 3. Path Planning (A* Algorithm)
+        # Decides where to drive based on Nav Cam.
+        {
+            "id": "Rover_Path_Plan",
+            "wcet": 5,
+            "period": 30,
+            "release": 0,
+            "type": "periodic",
+            "dependencies": ["Rover_Nav_Cam"],
+            "color": "green"
+        },
+
+        # 4. Earth Uplink (Command Receive)
+        # Listen for instructions from NASA.
+        {
+            "id": "Rover_Radio_Rx",
+            "wcet": 2,
+            "period": 60,       # Occurs rarely
+            "release": 5,
+            "type": "periodic",
+            "color": "purple"
+        },
+
+        # 5. Dust Storm Warning (Sensor Interrupt)
+        # Solar power dropping rapidly. Enter Safe Mode.
+        {
+            "id": "Rover_Safe_Mode",
+            "wcet": 3,
+            "release": 45,
+            "deadline": 10,
+            "type": "interrupt",
+            "color": "orange"
+        }
+    ]
+
+    # --- SELECT WHICH SCENARIO TO RUN ---
+    # return tasks_automotive
+    # return tasks_medical
+    return tasks_space

@@ -11,7 +11,7 @@ Dependencies:
 
 UPDATES:
 - Loads user app from app.py
-- Generates logical background processes based on Device Type.
+- Generates logical background processes based on Embedded RTOS types.
 - FIX: Solved Matplotlib 'NoneType' crash by disabling blit.
 - FIX: Solved GUI Dropdown text disappearing on selection.
 """
@@ -165,7 +165,7 @@ class RR(SchedulerBase):
         self._time_slice_left = max(0, self._time_slice_left - amount)
 
 # ------------------------------
-# Background Generator
+# Background Generator (UPDATED FOR EMBEDDED)
 # ------------------------------
 
 def get_background_tasks(device_type: str, sim_time: int) -> List[TaskSpec]:
@@ -173,29 +173,33 @@ def get_background_tasks(device_type: str, sim_time: int) -> List[TaskSpec]:
     if device_type == "None": return []
 
     def make_bg(id, wcet, period, type="periodic", color="#555555", jitter=0):
-        return TaskSpec(id=f"{id} (BG)", wcet=wcet, period=period, release=random.randint(0, 5),
+        return TaskSpec(id=f"{id} (OS)", wcet=wcet, period=period, release=random.randint(0, 5),
                         type=type, category="Background", color=color, jitter=jitter)
 
-    if device_type == "Android (Mobile)":
-        bg_tasks.append(make_bg("SurfaceFlinger", 1, 8, color="#7f8c8d")) 
-        bg_tasks.append(make_bg("System_Server", 2, 20, color="#95a5a6"))
-        bg_tasks.append(make_bg("kswapd0", 1, 40, color="#bdc3c7"))
-        bg_tasks.append(make_bg("Binder_IPC", 1, None, type="interrupt", release=15, color="#34495e"))
-    elif device_type == "iOS (Mobile)":
-        bg_tasks.append(make_bg("SpringBoard", 1, 10, color="#7f8c8d"))
-        bg_tasks.append(make_bg("backboardd", 1, 6, color="#95a5a6"))
-        bg_tasks.append(make_bg("kernel_task", 1, 25, color="#34495e"))
-        bg_tasks.append(make_bg("mds_stores", 3, 60, color="#bdc3c7"))
-    elif device_type == "Windows (Laptop)":
-        bg_tasks.append(make_bg("dwm.exe", 1, 12, color="#2c3e50"))
-        bg_tasks.append(make_bg("svchost.exe", 2, 30, color="#7f8c8d"))
-        bg_tasks.append(make_bg("SysInterrupts", 1, 15, jitter=2, color="#bdc3c7"))
-        bg_tasks.append(TaskSpec(id="MsMpEng (BG)", wcet=4, release=sim_time//2, type="aperiodic", category="Background", color="#555555"))
-    elif device_type == "macOS (Laptop)":
-        bg_tasks.append(make_bg("WindowServer", 1, 10, color="#2c3e50"))
-        bg_tasks.append(make_bg("launchd", 1, 35, color="#7f8c8d"))
-        bg_tasks.append(make_bg("mdworker", 2, 45, color="#bdc3c7"))
-        bg_tasks.append(make_bg("kernel_task", 1, 15, color="#34495e"))
+    # 1. FreeRTOS (Generic IoT / ESP32)
+    # Lightweight tasks, network stack, and timers.
+    if device_type == "FreeRTOS (ESP32)":
+        bg_tasks.append(make_bg("IDLE_Task", 1, 10, color="#34495e")) # Runs when nothing else does
+        bg_tasks.append(make_bg("Tmr_Svc", 1, 20, color="#7f8c8d"))   # Timer Service
+        bg_tasks.append(make_bg("LwIP_Stack", 2, 30, color="#95a5a6")) # WiFi/Network handling
+        # A random interrupt from a GPIO pin
+        bg_tasks.append(TaskSpec(id="ISR_GPIO", wcet=1, release=15, type="interrupt", category="Background", color="#bdc3c7"))
+
+    # 2. VxWorks (Aerospace / Mars Rover)
+    # High reliability, watchdog timers, system logging.
+    elif device_type == "VxWorks (Space)":
+        bg_tasks.append(make_bg("tLogTask", 1, 25, color="#2c3e50"))  # System Logging
+        bg_tasks.append(make_bg("tNet0", 2, 40, color="#7f8c8d"))     # Uplink/Downlink Stack
+        bg_tasks.append(make_bg("WDT_Kick", 1, 15, color="#e74c3c"))  # Watchdog Timer (Critical)
+        bg_tasks.append(make_bg("tExcTask", 1, 50, color="#95a5a6"))  # Exception handling check
+
+    # 3. Embedded Linux (RT-Preempt)
+    # Heavier background load, kernel threads.
+    elif device_type == "RT-Linux (Gateway)":
+        bg_tasks.append(make_bg("ksoftirqd", 1, 12, color="#2c3e50")) # Soft Interrupts
+        bg_tasks.append(make_bg("rcu_sched", 1, 35, color="#7f8c8d")) # Read-Copy-Update Sync
+        bg_tasks.append(make_bg("journald", 2, 45, color="#bdc3c7"))  # Heavy logging
+        bg_tasks.append(make_bg("watchdog/0", 1, 15, color="#e74c3c")) # Hardware Watchdog
 
     return bg_tasks
 
@@ -459,12 +463,17 @@ AAAAAAAAAAAAAAAAAAAAACH5BAEAAAAALAAAAAAgACAAAAikAAEIHEiwoMGDCBMqXMiwocOHECNK
 nEixosWLGDNq3Mixo8ePIEOKHEmypMmTKFOqXMmypcuXMGPKnEmzps2bOHPq3Mmzp8+fQIMKHUq0
 qNGjSJMqXcq0qdOnUKNKnUq1qtWrWLNq3cq1q9evYMOKHUu2rNmzaNOqXcu2rdu3cOPKnUu3rt27
 ePPq3cu3r9+/gAMLHky4sOHDiBMrXsy4sePHkCNLnky5suXLmDNr3sy5s+fPoEOLHk26tOnTqFOr
-Xs26tevXsGPLnk27tu3buHPr3s27t+/fwIMLH068uPHjyJMrX868ufPn0KNLn069uvXr2LNr3869
-u/fv4MOLH0++vPnz6NOrX8++vfv38OPLn0+/vv37+PPr38+/v///AAYo4IAEFmjggQgmqOCCDDbo
-4IMQRijhhBRWaOGFGGao4YYcdujhhyCGKOKIJJZo4okopqjiiiy26OKLMMYo44w01mjjjTjmqOOO
-PPbo449ABinkkEQWaeSRSCap5JJMNunkk1BGKeWUVFZp5ZVYZqnlllx26eWXYIYp5phklmnmmWim
-qeaabLbp5ptwxinnnHTWaeedeOap55589unnn4AGKuighBZq6KGIJqrooow26uijkEYq6aSUVmrppZhm
-qummnHbq6aeghirqqKSWauqpqKaq6qqsturqq7DGKuustNZq66245qrrrrz26uuvwAYr7LDEFmvsscgmq+yyzDbr7LPQRivttNRWa+212Gar7bbcduvtt+CGK+645JZr7rnopqvuuuy26+678MYr77z01mvvvfjmq+++/Pbr778AByzwwAQXbPDBCCes8MIMN+zwwxBHLPHEFFds8cUYZ6zxxhx37PHHIIcs8sgkl2zyySinrPLKLLfs8sswxyzzzDTXbPPNOOes88489+zzz0AHLfTQRBdt9NFIJ6300kw37fTTUEct9dRUV2311VhnrfXWXHft9ddghy322GSXbfbZaKet9tpst+3223DHLffcdNdt991456333nz37fffgAcueN9AA7AAAA7
+Xs26tevXsGPLnk27t+/fwIMLH068uPHjyJMrX868ufPn0KNLn069uvXr2LNr3869u/fv4MOLH0++
+vPnz6NOrX8++vfv38OPLn0+/vv37+PPr38+/v///AAYo4IAEFmjggQgmqOCCDDbo4IMQRijhhBRW
+aOGFGGao4YYcdujhhyCGKOKIJJZo4okopqjiiiy26OKLMMYo44w01mjjjTjmqOOOPPbo449ABink
+kEQWaeSRSCap5JJMNunkk1BGKeWUVFZp5ZVYZqnlllx26eWXYIYp5phklmnmmWimqeaabLbp5ptw
+xinnnHTWaeedeOap55589unnn4AGKuighBZq6KGIJqrooow26uijkEYq6aSUVmrppZhmqummnHbq
+6aeghirqqKSWauqpqKaq6qqsturqq7DGKuustNZq66245qrrrrz26uuvwAYr7LDEFmvsscgmq+yyz
+Dbr7LPQRivttNRWa+212Gar7bbcduvtt+CGK+645JZr7rnopqvuuuy26+678MYr77z01mvvvfjmq
++++/Pbr778AByzwwAQXbPDBCCes8MIMN+zwwxBHLPHEFFds8cUYZ6zxxhx37PHHIIcs8sgkl2zyy
+SinrPLKLLfs8sswxyzzzDTXbPPNOOes88489+zzz0AHLfTQRBdt9NFIJ6300kw37fTTUEct9dRUV
+2311VhnrfXWXHft9ddghy322GSXbfbZaKet9tpst+3223DHLffcdNdt991456333nz37fffgAcue
+N9AA7AAAA7
 """
 
 def gui_config_menu():
@@ -505,7 +514,7 @@ def gui_config_menu():
         "preemption": tk.BooleanVar(value=True),
         "cores": tk.IntVar(value=1),
         "sim_time": tk.IntVar(value=50),
-        "device": tk.StringVar(value="Android (Mobile)"),
+        "device": tk.StringVar(value="FreeRTOS (ESP32)"),
         "energy": tk.BooleanVar(value=True),
         "file_path": tk.StringVar(value=""),
         "file_type": tk.StringVar(value="app.py")
@@ -529,9 +538,14 @@ def gui_config_menu():
 
     # Hardware
     p2 = ttk.Frame(main, style="Panel.TFrame", padding=15); p2.pack(fill="x", pady=10)
-    ttk.Label(p2, text="HARDWARE PROFILE", style="Section.TLabel").pack(anchor="w", pady=(0,5))
-    ttk.Label(p2, text="Device Simulation:", style="Dark.TLabel").pack(anchor="w")
-    ttk.Combobox(p2, textvariable=vars["device"], values=["None", "Android (Mobile)", "iOS (Mobile)", "Windows (Laptop)", "macOS (Laptop)"], state="readonly", width=35, style="Dark.TCombobox").pack(fill="x", pady=5)
+    ttk.Label(p2, text="EMBEDDED PROFILE", style="Section.TLabel").pack(anchor="w", pady=(0,5))
+    ttk.Label(p2, text="Background System:", style="Dark.TLabel").pack(anchor="w")
+    
+    # --- UPDATED DROPDOWN VALUES ---
+    ttk.Combobox(p2, textvariable=vars["device"], 
+                 values=["None", "FreeRTOS (ESP32)", "VxWorks (Space)", "RT-Linux (Gateway)"], 
+                 state="readonly", width=35, style="Dark.TCombobox").pack(fill="x", pady=5)
+    
     g2 = ttk.Frame(p2, style="Panel.TFrame"); g2.pack(fill="x")
     ttk.Label(g2, text="Sim Duration:", style="Dark.TLabel").grid(row=0, column=0, sticky="w")
     tk.Entry(g2, textvariable=vars["sim_time"], width=10, bg=COLOR_BG, fg=COLOR_ACCENT, relief="flat", insertbackground="white").grid(row=0, column=1, sticky="e")
